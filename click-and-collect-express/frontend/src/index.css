@@ -1,0 +1,14 @@
+/* Styles globaux — palette café chaleureuse (Tailwind CSS). */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-stone-50 text-stone-900 antialiased;
+  }
+
+  ::selection {
+    @apply bg-amber-200 text-amber-950;
+  }
+}

@@ -1,0 +1,22 @@
+# Dépendances
+node_modules/
+
+# Builds
+dist/
+build/
+.vite/
+
+# Clients Prisma générés (output personnalisé par service)
+**/src/generated
+
+# Environnement
+.env
+.env.local
+
+# Divers
+*.log
+.DS_Store
+coverage/
+
+# Scripts de fumée locaux (tests d'intégration ad-hoc)
+.smoke/

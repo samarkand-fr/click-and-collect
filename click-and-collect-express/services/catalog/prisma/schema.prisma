@@ -1,0 +1,42 @@
+// =====================================================================
+//  catalog-service — Schéma de base de données (catalog_db)
+//  Database-per-service : cette base n'est lue par AUCUN autre service.
+//  Les échanges passent uniquement par l'API et les événements RabbitMQ.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  // Output personnalisé : en monorepo npm workspaces, l'output par défaut
+  // (node_modules/.prisma/client) est PARTAGÉ entre services et serait
+  // écrasé à chaque generate — chaque service génère dans son propre src.
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Produit du catalogue (boisson, plat, dessert...)
+model Product {
+  id          String   @id @default(cuid())
+  /// Nom commercial — unique : sert de clé idempotente au seed
+  name        String   @unique
+  /// Description affichée sur la carte (optionnelle)
+  description String?
+  /// Prix unitaire en CENTIMES d'euro (380 = 3,80 €) — jamais de flottant
+  price       Int
+  /// Catégorie libre : "coffee", "food", "dessert", ...
+  category    String
+  /// Stock physique — décrémenté atomiquement par POST /products/reserve
+  stock       Int      @default(0)
+  /// Illustration du produit (URL absolue)
+  imageUrl    String?
+  /// Interrupteur manuel : le produit disparaît de la carte si false
+  isAvailable Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category])
+  @@map("products")
+}

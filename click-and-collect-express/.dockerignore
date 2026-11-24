@@ -1,0 +1,13 @@
+# Allège le contexte de build envoyé au démon Docker (tous les services)
+**/node_modules
+**/dist
+**/src/generated
+**/coverage
+**/.env
+**/.env.local
+**/*.log
+.git
+.github
+.vscode
+docker-compose.yml
+**/Dockerfile

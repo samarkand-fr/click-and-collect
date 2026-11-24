@@ -1,0 +1,13 @@
+# Fichiers ignorés par Git pour le frontend.
+
+# Dépendances
+node_modules/
+
+# Build
+dist/
+*.tsbuildinfo
+
+# Fichiers locaux et journaux
+*.local
+.DS_Store
+npm-debug.log*

@@ -1,0 +1,28 @@
+{
+  "name": "@cnc/payment-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Microservice paiement : consommation order.created, traitement simulé (2 s, 90 % succès / 10 % échec contrôlable), publication payment.succeeded / payment.failed (Click & Collect Express)",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "typecheck": "tsc --noEmit",
+    "simulate": "tsx scripts/simulate-order-created.ts"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.4",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "pino": "^9.6.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.5",
+    "@types/express": "^5.0.0",
+    "@types/node": "^20.17.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

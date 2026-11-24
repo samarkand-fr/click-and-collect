@@ -1,0 +1,46 @@
+// =====================================================================
+//  order-service — Schéma de base de données (orders_db)
+//  Database-per-service : les prix et noms sont SNAPSHOTTÉS dans items
+//  (JSON) au moment de la commande — une évolution du catalogue
+//  ultérieure ne réécrit jamais l'historique des commandes.
+// =====================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  // Output personnalisé : un client Prisma par service (jamais partagé)
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Cycle de vie d'une commande :
+/// PENDING → PAID (payment.succeeded) → PREPARING (cuisine) → READY (cuisine)
+/// PENDING → CANCELLED (payment.failed)
+enum OrderStatus {
+  PENDING
+  PAID
+  PREPARING
+  READY
+  CANCELLED
+}
+
+/// Commande d'un client — agrégat racine du service.
+model Order {
+  id           String      @id @default(cuid())
+  /// Nom du client (click & collect sans compte utilisateur)
+  customerName String
+  /// Snapshots des articles : [{ productId, name, unitPrice, quantity, subtotal }]
+  items        Json
+  /// Total en CENTIMES, calculé depuis les prix autoritaires du catalogue
+  totalAmount  Int
+  status       OrderStatus @default(PENDING)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}

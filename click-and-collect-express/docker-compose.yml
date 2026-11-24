@@ -1,0 +1,320 @@
+# =============================================================================
+#  CLICK & COLLECT EXPRESS — Orchestration complète
+#
+#  Démarrage    : docker compose up -d --build
+#  Frontend     : http://localhost:5173
+#  API Gateway  : http://localhost:8080  (REST /api/** + WebSocket /socket.io)
+#  RabbitMQ UI  : http://localhost:15672
+#
+#  Prérequis    : Docker Engine >= 24 · Docker Compose v2
+#  Variables    : cp .env.example .env  (mots de passe par défaut = dev local)
+# =============================================================================
+
+name: click-and-collect-express
+
+# -----------------------------------------------------------------------------
+#  Fragments réutilisables (anchors YAML) — évitent la duplication
+# -----------------------------------------------------------------------------
+
+x-pg-healthcheck: &pg-healthcheck
+  # Générique : lit POSTGRES_USER / POSTGRES_DB définis dans chaque conteneur.
+  test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  start_period: 10s
+
+x-node-healthcheck: &node-healthcheck
+  # Générique : chaque service définit sa variable PORT, le check s'adapte seul.
+  test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
+
+x-pg-env: &pg-env
+  POSTGRES_USER: ${POSTGRES_USER:-cnc}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_pg}
+
+x-broker-env: &broker-env
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-cnc_admin}:${RABBITMQ_PASSWORD:-change_me_rabbit}@rabbitmq:5672
+
+# -----------------------------------------------------------------------------
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  BROKER D'ÉVÉNEMENTS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: cnc-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"          # AMQP — utilisé par tous les microservices
+      - "15672:15672"        # Management UI — http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cnc_admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-change_me_rabbit}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - cnc_backend
+    # Les exchanges (topic) et queues sont déclarés (assert) au démarrage
+    # de chaque service : aucun script d'initialisation nécessaire ici.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  BASES DE DONNÉES — une instance PostgreSQL isolée par service
+  #  (database-per-service : schémas et migrations totalement indépendants)
+  #  Ports publiés sur 127.0.0.1 uniquement (debug local) — à retirer en prod.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  catalog-db:
+    image: postgres:16-alpine
+    container_name: cnc-catalog-db
+    restart: unless-stopped
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: catalog_db
+    volumes:
+      - catalog_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg-healthcheck
+    ports:
+      - "127.0.0.1:5433:5432"
+    networks:
+      - cnc_backend
+
+  orders-db:
+    image: postgres:16-alpine
+    container_name: cnc-orders-db
+    restart: unless-stopped
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: orders_db
+    volumes:
+      - orders_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg-healthcheck
+    ports:
+      - "127.0.0.1:5434:5432"
+    networks:
+      - cnc_backend
+
+  payment-db:
+    image: postgres:16-alpine
+    container_name: cnc-payment-db
+    restart: unless-stopped
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: payment_db
+    volumes:
+      - payment_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg-healthcheck
+    ports:
+      - "127.0.0.1:5435:5432"
+    networks:
+      - cnc_backend
+
+  notifications-db:
+    image: postgres:16-alpine
+    container_name: cnc-notifications-db
+    restart: unless-stopped
+    environment:
+      <<: *pg-env
+      POSTGRES_DB: notifications_db
+    volumes:
+      - notifications_pgdata:/var/lib/postgresql/data
+    healthcheck: *pg-healthcheck
+    ports:
+      - "127.0.0.1:5436:5432"
+    networks:
+      - cnc_backend
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  MICROSERVICES MÉTIER
+  #  Contexte de build = racine du monorepo (pour embarquer packages/shared).
+  #  Aucun port hôte : les services ne sont joignables QUE via le gateway.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  catalog-service:
+    build:
+      context: .
+      dockerfile: services/catalog/Dockerfile
+    container_name: cnc-catalog
+    restart: unless-stopped
+    environment:
+      <<: *broker-env
+      NODE_ENV: production
+      PORT: 3001
+      SERVICE_NAME: catalog-service
+      DATABASE_URL: postgres://${POSTGRES_USER:-cnc}:${POSTGRES_PASSWORD:-change_me_pg}@catalog-db:5432/catalog_db
+      SEED_ON_BOOT: ${SEED_ON_BOOT:-true}          # seed idempotent (6 produits) au démarrage
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck: *node-healthcheck
+    networks:
+      - cnc_backend
+
+  orders-service:
+    build:
+      context: .
+      dockerfile: services/orders/Dockerfile
+    container_name: cnc-orders
+    restart: unless-stopped
+    environment:
+      <<: *broker-env
+      NODE_ENV: production
+      PORT: 3002
+      SERVICE_NAME: orders-service
+      DATABASE_URL: postgres://${POSTGRES_USER:-cnc}:${POSTGRES_PASSWORD:-change_me_pg}@orders-db:5432/orders_db
+      CATALOG_URL: http://catalog-service:3001          # réservation / libération de stock
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck: *node-healthcheck
+    networks:
+      - cnc_backend
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    container_name: cnc-payment
+    restart: unless-stopped
+    environment:
+      <<: *broker-env
+      NODE_ENV: production
+      PORT: 3003
+      SERVICE_NAME: payment-service
+      DATABASE_URL: postgres://${POSTGRES_USER:-cnc}:${POSTGRES_PASSWORD:-change_me_pg}@payment-db:5432/payment_db
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-mock}          # mock | stripe
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # Simulation : délai de traitement + taux de succès du tirage aléatoire
+      PAYMENT_PROCESSING_MS: ${PAYMENT_PROCESSING_MS:-2000}
+      PAYMENT_SUCCESS_RATE: ${PAYMENT_SUCCESS_RATE:-0.9}
+      TEST_ENDPOINTS: ${TEST_ENDPOINTS:-false}             # POST /__test/* en prod
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck: *node-healthcheck
+    networks:
+      - cnc_backend
+
+  notifications-service:
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    container_name: cnc-notifications
+    restart: unless-stopped
+    environment:
+      <<: *broker-env
+      NODE_ENV: production
+      PORT: 3004
+      SERVICE_NAME: notifications-service
+      DATABASE_URL: postgres://${POSTGRES_USER:-cnc}:${POSTGRES_PASSWORD:-change_me_pg}@notifications-db:5432/notifications_db
+      SMTP_URL: ${SMTP_URL:-}                              # optionnel (canal e-mail)
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}                       # origines Socket.io (CSV en prod)
+      TEST_ENDPOINTS: ${TEST_ENDPOINTS:-false}             # POST /__test/* en prod
+    # Aucun port hôte : le gateway proxifie /socket.io (polling + WebSocket)
+    # vers ce service. Le port 3004 n'est joignable QUE depuis cnc_backend.
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck: *node-healthcheck
+    networks:
+      - cnc_backend
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  API GATEWAY — point d'entrée HTTP unique (JWT, rate-limit, proxy)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: cnc-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"          # Seule porte d'entrée de l'API
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}                       # '*' en dev, CSV en prod
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-120}
+      PROXY_TIMEOUT_MS: ${PROXY_TIMEOUT_MS:-15000}
+      CATALOG_URL: http://catalog-service:3001
+      ORDERS_URL: http://orders-service:3002
+      PAYMENT_URL: http://payment-service:3003
+      NOTIFICATIONS_URL: http://notifications-service:3004
+    depends_on:
+      catalog-service:
+        condition: service_healthy
+      orders-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      notifications-service:
+        condition: service_healthy
+    healthcheck: *node-healthcheck
+    networks:
+      - cnc_backend          # parle aux microservices
+      - cnc_frontend         # est joignable par le frontend
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  #  FRONTEND — React + Vite buildé, servi par nginx (proxy /api + /socket.io
+  #  → gateway : HTTP et WebSocket). Même origine : aucun CORS nécessaire.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: cnc-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"            # Application web — http://localhost:5173
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - cnc_frontend
+
+# -----------------------------------------------------------------------------
+#  Volumes persistants (données des 4 bases + broker)
+# -----------------------------------------------------------------------------
+
+volumes:
+  rabbitmq_data:
+  catalog_pgdata:
+  orders_pgdata:
+  payment_pgdata:
+  notifications_pgdata:
+
+# -----------------------------------------------------------------------------
+#  Réseaux :
+#   - cnc_backend  : gateway + microservices + bases + broker
+#   - cnc_frontend : frontend + gateway uniquement (isolation)
+# -----------------------------------------------------------------------------
+
+networks:
+  cnc_backend:
+    driver: bridge
+  cnc_frontend:
+    driver: bridge
